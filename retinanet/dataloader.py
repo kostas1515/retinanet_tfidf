@@ -5,6 +5,7 @@ import torch
 import numpy as np
 import random
 import csv
+import math
 
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
@@ -166,6 +167,7 @@ class CSVDataset(Dataset):
         try:
             return function(value)
         except ValueError as e:
+            print(e)
             raise_from(ValueError(fmt.format(e)), None)
 
     def _open_for_csv(self, path):
@@ -201,12 +203,18 @@ class CSVDataset(Dataset):
 
     def __getitem__(self, idx):
 
+
         img = self.load_image(idx)
         annot = self.load_annotations(idx)
+        img_id=self.get_img_id(self.image_names[idx])
         sample = {'img': img, 'annot': annot}
         if self.transform:
             sample = self.transform(sample)
-
+            
+        if type(sample) is tuple:
+            sample[1]['image_id'] = img_id
+        else:
+            sample['image_id'] = img_id
         return sample
 
     def load_image(self, image_index):
@@ -216,6 +224,12 @@ class CSVDataset(Dataset):
             img = skimage.color.gray2rgb(img)
 
         return img.astype(np.float32)/255.0
+    
+    def get_img_id(self,img_name):
+        img_id=img_name.split('/')[-1]
+        img_id=img_id.split('.')[0]
+        img_id=torch.tensor(int(img_id),dtype=torch.int64)
+        return (img_id)
 
     def load_annotations(self, image_index):
         # get ground truth annotations
@@ -266,10 +280,10 @@ class CSVDataset(Dataset):
             if (x1, y1, x2, y2, class_name) == ('', '', '', '', ''):
                 continue
 
-            x1 = self._parse(x1, int, 'line {}: malformed x1: {{}}'.format(line))
-            y1 = self._parse(y1, int, 'line {}: malformed y1: {{}}'.format(line))
-            x2 = self._parse(x2, int, 'line {}: malformed x2: {{}}'.format(line))
-            y2 = self._parse(y2, int, 'line {}: malformed y2: {{}}'.format(line))
+            x1 = self._parse(math.floor(float(x1)), int, 'line {}: malformed x1: {{}}'.format(line))
+            y1 = self._parse(math.floor(float(y1)), int, 'line {}: malformed y1: {{}}'.format(line))
+            x2 = self._parse(math.ceil(float(x2)), int, 'line {}: malformed x2: {{}}'.format(line))
+            y2 = self._parse(math.ceil(float(y2)), int, 'line {}: malformed y2: {{}}'.format(line))
 
             # Check that the bounding box is valid.
             if x2 <= x1:
@@ -299,10 +313,10 @@ class CSVDataset(Dataset):
 
 
 def collater(data):
-
     imgs = [s['img'] for s in data]
     annots = [s['annot'] for s in data]
     scales = [s['scale'] for s in data]
+    img_ids = [s['image_id'] for s in data]
         
     widths = [int(s.shape[0]) for s in imgs]
     heights = [int(s.shape[1]) for s in imgs]
@@ -334,7 +348,7 @@ def collater(data):
 
     padded_imgs = padded_imgs.permute(0, 3, 1, 2)
 
-    return {'img': padded_imgs, 'annot': annot_padded, 'scale': scales}
+    return {'img': padded_imgs, 'annot': annot_padded, 'scale': scales, 'image_id':img_ids}
 
 class Resizer(object):
     """Convert ndarrays in sample to Tensors."""
@@ -456,3 +470,27 @@ class AspectRatioBasedSampler(Sampler):
 
         # divide into groups, one group = one batch
         return [[order[x % len(order)] for x in range(i, i + self.batch_size)] for i in range(0, len(order), self.batch_size)]
+
+    
+
+class CSV2COCO(object):
+    """Convert ndarrays in sample to Tensors."""
+
+    def __call__(self, sample):
+        annotations=sample['annot']
+        bboxes=annotations[:,:-1]
+        area=(bboxes[:,3]-bboxes[:,1])*(bboxes[:,2]-bboxes[:,0])
+        iscrowd= torch.zeros(bboxes.shape[0],dtype=torch.uint8)
+        labels=annotations[:,-1]
+        labels=labels.type(torch.int64)
+        
+        coco_target={}
+        coco_target['boxes']=bboxes
+        coco_target['area']=area
+        coco_target['iscrowd']=iscrowd
+        coco_target['labels']=labels
+        
+
+        
+
+        return sample['img'],coco_target

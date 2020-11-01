@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import pandas as pd
 
 def calc_iou(a, b):
     area = (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])
@@ -22,9 +23,13 @@ def calc_iou(a, b):
     return IoU
 
 class FocalLoss(nn.Module):
-    #def __init__(self):
-
+        
     def forward(self, classifications, regressions, anchors, annotations):
+        
+        idf_weights=pd.read_csv('../idf.csv')['img_freq']
+        idf_weights=torch.tensor(idf_weights).cuda()
+        idf_weights=-torch.log(idf_weights)
+        
         alpha = 0.25
         gamma = 2.0
         batch_size = classifications.shape[0]
@@ -112,7 +117,8 @@ class FocalLoss(nn.Module):
             focal_weight = torch.where(torch.eq(targets, 1.), 1. - classification, classification)
             focal_weight = alpha_factor * torch.pow(focal_weight, gamma)
 
-            bce = -(targets * torch.log(classification) + (1.0 - targets) * torch.log(1.0 - classification))
+            bce = -(idf_weights*targets * torch.log(classification) + (1.0 - targets) * torch.log(1.0 - classification))
+#             bce = -(targets * torch.log(classification) + (1.0 - targets) * torch.log(1.0 - classification))
 
             # cls_loss = focal_weight * torch.pow(bce, gamma)
             cls_loss = focal_weight * bce
@@ -121,7 +127,6 @@ class FocalLoss(nn.Module):
                 cls_loss = torch.where(torch.ne(targets, -1.0), cls_loss, torch.zeros(cls_loss.shape).cuda())
             else:
                 cls_loss = torch.where(torch.ne(targets, -1.0), cls_loss, torch.zeros(cls_loss.shape))
-
             classification_losses.append(cls_loss.sum()/torch.clamp(num_positive_anchors.float(), min=1.0))
 
             # compute the loss for regression
